@@ -36,7 +36,11 @@
 
 #if (defined LIBRESSL_VERSION_NUMBER && OPENSSL_VERSION_NUMBER == 0x20000000L)
 #undef OPENSSL_VERSION_NUMBER
+#if (LIBRESSL_VERSION_NUMBER >= 0x2080000fL)
+#define OPENSSL_VERSION_NUMBER  0x1010000fL
+#else
 #define OPENSSL_VERSION_NUMBER  0x1000107fL
+#endif
 #endif
 
 
@@ -83,12 +87,17 @@ struct ngx_ssl_connection_s {
     ngx_event_handler_pt        saved_read_handler;
     ngx_event_handler_pt        saved_write_handler;
 
+    u_char                      early_buf;
+
     unsigned                    handshaked:1;
     unsigned                    renegotiation:1;
     unsigned                    buffer:1;
     unsigned                    no_wait_shutdown:1;
     unsigned                    no_send_shutdown:1;
     unsigned                    handshake_buffer_set:1;
+    unsigned                    try_early_data:1;
+    unsigned                    in_early:1;
+    unsigned                    early_preread:1;
 };
 
 
