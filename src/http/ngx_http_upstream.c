@@ -409,6 +409,10 @@ static ngx_http_variable_t  ngx_http_upstream_vars[] = {
       ngx_http_upstream_response_length_variable, 1,
       NGX_HTTP_VAR_NOCACHEABLE, 0 },
 
+    { ngx_string("upstream_bytes_sent"), NULL,
+      ngx_http_upstream_response_length_variable, 2,
+      NGX_HTTP_VAR_NOCACHEABLE, 0 },
+
 #if (NGX_HTTP_CACHE)
 
     { ngx_string("upstream_cache_status"), NULL,
@@ -592,10 +596,6 @@ ngx_http_upstream_init_request(ngx_http_request_t *r)
                 u->buffer.start = NULL;
                 u->cache_status = NGX_HTTP_CACHE_MISS;
                 u->request_sent = 1;
-            }
-
-            if (ngx_http_upstream_cache_background_update(r, u) != NGX_OK) {
-                rc = NGX_ERROR;
             }
         }
 
@@ -846,7 +846,7 @@ ngx_http_upstream_cache(ngx_http_request_t *r, ngx_http_upstream_t *u)
 
         ngx_http_file_cache_create_key(r);
 
-        if (r->cache->header_start + 256 >= u->conf->buffer_size) {
+        if (r->cache->header_start + 256 > u->conf->buffer_size) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                           "%V_buffer_size %uz is not enough for cache key, "
                           "it should be increased to at least %uz",
@@ -898,9 +898,14 @@ ngx_http_upstream_cache(ngx_http_request_t *r, ngx_http_upstream_t *u)
              || c->stale_updating) && !r->background
             && u->conf->cache_background_update)
         {
-            r->cache->background = 1;
-            u->cache_status = rc;
-            rc = NGX_OK;
+            if (ngx_http_upstream_cache_background_update(r, u) == NGX_OK) {
+                r->cache->background = 1;
+                u->cache_status = rc;
+                rc = NGX_OK;
+
+            } else {
+                rc = NGX_ERROR;
+            }
         }
 
         break;
@@ -1101,10 +1106,6 @@ ngx_http_upstream_cache_background_update(ngx_http_request_t *r,
     ngx_http_upstream_t *u)
 {
     ngx_http_request_t  *sr;
-
-    if (!r->cached || !r->cache->background) {
-        return NGX_OK;
-    }
 
     if (r == r->main) {
         r->preserve_body = 1;
@@ -2975,6 +2976,7 @@ ngx_http_upstream_send_response(ngx_http_request_t *r, ngx_http_upstream_t *u)
                              ngx_http_upstream_process_non_buffered_downstream;
 
         r->limit_rate = 0;
+        r->limit_rate_set = 1;
 
         if (u->input_filter_init(u->input_filter_ctx) == NGX_ERROR) {
             ngx_http_upstream_finalize_request(r, u, NGX_ERROR);
@@ -4136,6 +4138,10 @@ ngx_http_upstream_next(ngx_http_request_t *r, ngx_http_upstream_t *u,
 
     if (u->peer.sockaddr) {
 
+        if (u->peer.connection) {
+            u->state->bytes_sent = u->peer.connection->sent;
+        }
+
         if (ft_type == NGX_HTTP_UPSTREAM_FT_HTTP_403
             || ft_type == NGX_HTTP_UPSTREAM_FT_HTTP_404)
         {
@@ -4318,6 +4324,10 @@ ngx_http_upstream_finalize_request(ngx_http_request_t *r,
             u->state->bytes_received += u->pipe->read_length
                                         - u->pipe->preread_size;
             u->state->response_length = u->pipe->read_length;
+        }
+
+        if (u->peer.connection) {
+            u->state->bytes_sent = u->peer.connection->sent;
         }
     }
 
@@ -4794,6 +4804,7 @@ ngx_http_upstream_process_limit_rate(ngx_http_request_t *r, ngx_table_elt_t *h,
 
     if (n != NGX_ERROR) {
         r->limit_rate = (size_t) n;
+        r->limit_rate_set = 1;
     }
 
     return NGX_OK;
@@ -5501,6 +5512,9 @@ ngx_http_upstream_response_length_variable(ngx_http_request_t *r,
 
         if (data == 1) {
             p = ngx_sprintf(p, "%O", state[i].bytes_received);
+
+        } else if (data == 2) {
+            p = ngx_sprintf(p, "%O", state[i].bytes_sent);
 
         } else {
             p = ngx_sprintf(p, "%O", state[i].response_length);
